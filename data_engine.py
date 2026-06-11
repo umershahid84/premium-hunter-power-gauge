@@ -43,13 +43,8 @@ def get_power_gauge_score(ticker):
     }
     technical_score = 50; financial_score = 50; earnings_score = 55
 
-    # SPOOFING: Fake browser session to bypass Yahoo's anti-bot wall
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
-
-    stock = yf.Ticker(ticker, session=session)
+# Let yfinance handle the User-Agent and Crumb generation natively
+    stock = yf.Ticker(ticker)
 
     # PHASE 1: Historical Prices (Ultra-Stable Endpoint)
     try:
