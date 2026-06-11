@@ -1,16 +1,11 @@
+import yfinance as yf
 import pandas as pd
 import requests
 import streamlit as st
 from datetime import datetime, timedelta
 
-# Attempt to load the API key securely from Streamlit Secrets
-try:
-    API_KEY = st.secrets["DV9GYD1M7S3XE96O"]
-except (KeyError, FileNotFoundError):
-    # Fallback for local testing if secrets.toml isn't set up locally
-    API_KEY = "demo" 
-
 def calculate_cmf(df, period=20):
+    """Calculates the Chaikin Money Flow (CMF)"""
     if 'close' not in df.columns or len(df) < period:
         return pd.Series(0, index=df.index)
     
@@ -25,6 +20,7 @@ def calculate_cmf(df, period=20):
     return cmf.fillna(0)
 
 def calculate_rsi(series, period=14):
+    """Calculates the Relative Strength Index"""
     if len(series) < period:
         return pd.Series(50, index=series.index)
     
@@ -36,8 +32,10 @@ def calculate_rsi(series, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi.bfill().ffill().fillna(50)
 
+# The cache prevents Streamlit from spamming Yahoo with duplicate requests
+@st.cache_data(ttl=3600) 
 def get_power_gauge_score(ticker):
-    """Fetches Technical and Fundamental data via Alpha Vantage REST API"""
+    """Fetches data using a spoofed browser session to bypass Yahoo Cloud blocks"""
     df = pd.DataFrame()
     fundamental_data = {
         "pe_ratio": 0.0, "pb_ratio": 0.0, "market_cap": 0.0,
@@ -45,73 +43,66 @@ def get_power_gauge_score(ticker):
     }
     technical_score = 50; financial_score = 50; earnings_score = 55
 
-    # PHASE 1: Historical Prices (Daily OHLCV)
+    # SPOOFING: Fake browser session to bypass Yahoo's anti-bot wall
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+
+    stock = yf.Ticker(ticker, session=session)
+
+    # PHASE 1: Historical Prices (Ultra-Stable Endpoint)
     try:
-        url_daily = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize=full&apikey={API_KEY}"
-        res_daily = requests.get(url_daily).json()
-        
-        if "Time Series (Daily)" in res_daily:
-            ts = res_daily["Time Series (Daily)"]
-            df = pd.DataFrame.from_dict(ts, orient='index')
-            df.index.name = 'time_key'
-            df = df.reset_index()
+        raw_df = stock.history(period="5y", interval="1d")
+        if not raw_df.empty:
+            df = raw_df.reset_index()
+            df.columns = df.columns.str.lower()
+            df = df.rename(columns={'date': 'time_key'})
+            df['time_key'] = pd.to_datetime(df['time_key']).dt.tz_localize(None)
             
-            # Rename columns to match the application's lowercase schema
-            df = df.rename(columns={
-                "1. open": "open", "2. high": "high", "3. low": "low", 
-                "4. close": "close", "5. volume": "volume"
-            })
-            
-            # Convert types and sort chronologically (oldest to newest)
-            df['time_key'] = pd.to_datetime(df['time_key'])
-            df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-            df = df.sort_values('time_key').reset_index(drop=True)
-            
-            # Filter to last 5 years for performance
-            five_years_ago = datetime.now() - timedelta(days=1825)
-            df = df[df['time_key'] >= five_years_ago].copy()
-            
-            # Mathematical Technical indicators
             df['cmf'] = calculate_cmf(df)
             df['rsi'] = calculate_rsi(df['close'])
             df['lt_trend'] = df['close'].rolling(window=20).mean().bfill()
             
             technical_score = max(10, min(90, 50 + (df['cmf'].iloc[-1] * 100)))
             
-            # Calculate 52-Week Peak & Floor from historical data
+            # Calculate 52W High/Low directly from history
             one_year_ago = datetime.now() - timedelta(days=365)
             df_1yr = df[df['time_key'] >= one_year_ago]
             if not df_1yr.empty:
                 fundamental_data["high_52w"] = float(df_1yr['high'].max())
                 fundamental_data["low_52w"] = float(df_1yr['low'].min())
-        else:
-            print(f"Alpha Vantage API limit reached or invalid ticker: {res_daily}")
-            
     except Exception as e:
-        print(f"Historical pricing layer failure: {e}")
+        print(f"History failure: {e}")
 
-    # PHASE 2: Fundamentals (Company Overview)
+    # PHASE 2: Fundamentals via Spoofed Session
     try:
-        url_overview = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={API_KEY}"
-        info = requests.get(url_overview).json()
+        info = stock.info 
         
-        # Check if the API returned valid fundamental data and not an error/limit message
-        if "Symbol" in info:
-            # Parse fields, replacing "None" strings with 0.0
-            pe = info.get("PERatio", "0.0")
-            fundamental_data["pe_ratio"] = float(pe) if pe and pe != "None" else 0.0
+        if info:
+            pe = info.get("trailingPE", info.get("forwardPE", 0.0))
+            fundamental_data["pe_ratio"] = float(pe) if pd.notna(pe) else 0.0
             
-            pb = info.get("PriceToBookRatio", "0.0")
-            fundamental_data["pb_ratio"] = float(pb) if pb and pb != "None" else 0.0
+            pb = info.get("priceToBook", 0.0)
+            fundamental_data["pb_ratio"] = float(pb) if pd.notna(pb) else 0.0
             
-            mcap = info.get("MarketCapitalization", "0")
-            fundamental_data["market_cap"] = float(mcap) if mcap and mcap != "None" else 0.0
+            fundamental_data["market_cap"] = info.get("marketCap", 0.0)
             
-            # Alpha Vantage returns yield as a decimal (e.g., 0.015 for 1.5%)
-            div = info.get("DividendYield", "0.0")
-            fundamental_data["dividend_yield"] = float(div) * 100 if div and div != "None" else 0.0
+            div = info.get("dividendYield", 0.0)
+            fundamental_data["dividend_yield"] = float(div) * 100 if pd.notna(div) else 0.0
 
-        # Fundamental Scoring Assignments based on parsed metrics
+        # FAILSAFE: Manual dividend calculation if info is blocked
+        if fundamental_data["dividend_yield"] == 0.0:
+            div_history = stock.dividends
+            if not div_history.empty and not df.empty:
+                last_year_divs = div_history[div_history.index >= (pd.Timestamp.now(tz=div_history.index.tz) - pd.DateOffset(years=1))]
+                total_annual_dividend = last_year_divs.sum()
+                current_price = df['close'].iloc[-1]
+                
+                if current_price > 0 and total_annual_dividend > 0:
+                    fundamental_data["dividend_yield"] = (total_annual_dividend / current_price) * 100
+
+        # Fundamental Scoring Logic
         pe_val = fundamental_data["pe_ratio"]
         if pe_val > 0:
             if pe_val < 18: financial_score = 85
@@ -121,24 +112,21 @@ def get_power_gauge_score(ticker):
         earnings_score = 75 if fundamental_data["dividend_yield"] > 0.5 else 55
 
     except Exception as e:
-        print(f"Fundamentals metadata extraction failure: {e}")
+        print(f"Fundamentals failure: {e}")
 
-    # Combine pillars safely
-    pillars = {
-        "Technicals": round(technical_score),
-        "Financials": round(financial_score),
-        "Earnings": round(earnings_score),
-        "Expert Sentiment": 58
-    }
-    
-    final_score = sum(pillars.values()) / 4
+    final_score = (technical_score + financial_score + earnings_score + 58) / 4
     rating = "Bullish" if final_score >= 65 else "Bearish" if final_score <= 35 else "Neutral"
 
     return {
         "ticker": ticker,
         "final_score": round(final_score),
         "rating": rating,
-        "pillars": pillars,
+        "pillars": {
+            "Technicals": round(technical_score),
+            "Financials": round(financial_score),
+            "Earnings": round(earnings_score),
+            "Expert Sentiment": 58
+        },
         "fundamentals": fundamental_data,
         "history_df": df
     }

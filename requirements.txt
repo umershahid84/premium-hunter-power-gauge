@@ -2,3 +2,4 @@ pandas
 plotly
 streamlit
 requests
+yfinance>=0.2.37
