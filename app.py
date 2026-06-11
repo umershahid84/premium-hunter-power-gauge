@@ -5,6 +5,16 @@ import pandas as pd
 from datetime import datetime
 from data_engine import get_power_gauge_score
 
+# Hide the Streamlit header and default menu
+hide_streamlit_style = """
+    <style>
+    header {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 # --- 1. Global Page Configuration ---
 st.set_page_config(page_title="Premium Hunter Power Gauge", layout="wide", initial_sidebar_state="expanded")
 
