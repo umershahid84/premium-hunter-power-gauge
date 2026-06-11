@@ -124,10 +124,10 @@ if ticker_input:
         full_df = results.get("history_df", pd.DataFrame())
         funds = results.get("fundamentals", {})
 
-    if full_df.empty:
-        st.error("No telemetry stream detected. Ensure OpenD is active.")
+if full_df.empty:
+        st.error("⚠️ Data connection failed. Yahoo Finance returned an empty dataset. Please clear the Streamlit cache and try again.")
     else:
-        # Dynamic Timeframe Filter Bar Controls
+        # Timeframe Controls
         col_meta, col_time = st.columns([2, 1])
         with col_time:
             timeframe = st.radio("TF", ["1M", "3M", "6M", "YTD", "1Y", "5Y"], horizontal=True, index=5, label_visibility="collapsed")
