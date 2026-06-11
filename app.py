@@ -80,8 +80,8 @@ def evaluate_factor(score):
     return "Neutral", "#e6b800"
 
 # --- Dynamic Session Memory Tracks ---
-if "search_ticker" not in st.session_state: st.session_state.search_ticker = "US.ORCL"
-if "history" not in st.session_state: st.session_state.history = ["US.ORCL", "US.AAPL", "US.MSFT"]
+if "search_ticker" not in st.session_state: st.session_state.search_ticker = "ORCL"
+if "history" not in st.session_state: st.session_state.history = ["ORCL", "AAPL", "MSFT"]
 
 def load_ticker(t): st.session_state.search_ticker = t
 

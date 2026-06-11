@@ -1,8 +1,9 @@
-import moomoo as ft
+import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 
 def calculate_cmf(df, period=20):
+    """Calculates the Chaikin Money Flow (CMF)"""
     mf_multiplier = ((df['close'] - df['low']) - (df['high'] - df['close'])) / (df['high'] - df['low'])
     mf_multiplier = mf_multiplier.bfill() 
     mf_volume = mf_multiplier * df['volume']
@@ -10,6 +11,7 @@ def calculate_cmf(df, period=20):
     return cmf
 
 def calculate_rsi(series, period=14):
+    """Calculates the Relative Strength Index for Overbought/Oversold"""
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -18,101 +20,88 @@ def calculate_rsi(series, period=14):
     return rsi.bfill()
 
 def get_power_gauge_score(ticker):
-    quote_ctx = ft.OpenQuoteContext(host='127.0.0.1', port=11111)
-    
-    end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=365 * 5)).strftime('%Y-%m-%d')
-    
+    """Fetches data directly from Yahoo Finance Cloud API (No Local Gateway Needed)"""
     df = pd.DataFrame()
     fundamental_data = {}
-    technical_score = 50 
+    technical_score = 50
     financial_score = 50
     earnings_score = 55
 
     try:
-        ret, data, page_req_key = quote_ctx.request_history_kline(
-            ticker, start=start_date, end=end_date, ktype=ft.KLType.K_DAY, max_count=2000
-        )
+        # 1. Fetch 5 years of daily K-line data from Yahoo Finance cloud
+        stock = yf.Ticker(ticker)
+        raw_df = stock.history(period="5y", interval="1d")
         
-        if ret == ft.RET_OK and not data.empty:
-            df = data[['time_key', 'open', 'close', 'high', 'low', 'volume']].copy()
-            df['time_key'] = pd.to_datetime(df['time_key']) 
+        if not raw_df.empty:
+            # Clean and match your existing dataframe schema
+            df = raw_df.reset_index()
+            df.columns = df.columns.str.lower() # Convert 'Close', 'High' to lowercase
+            df = df.rename(columns={'date': 'time_key'})
+            df['time_key'] = pd.to_datetime(df['time_key']).dt.tz_localize(None) # Remove timezone data for plotly compatibility
+            
+            # Technical math operations
             df['cmf'] = calculate_cmf(df)
-            df['rsi'] = calculate_rsi(df['close']) 
-            df['lt_trend'] = df['close'].rolling(window=20).mean().bfill() 
+            df['rsi'] = calculate_rsi(df['close'])
+            df['lt_trend'] = df['close'].rolling(window=20).mean().bfill()
             
             latest_cmf = df['cmf'].iloc[-1]
-            technical_score = 50 + (latest_cmf * 100) 
+            technical_score = 50 + (latest_cmf * 100)
             technical_score = max(10, min(90, technical_score))
 
-        # 2. Resilient Fundamental Snapshot Data Extractor
-        ret_snap, snap_df = quote_ctx.get_market_snapshot([ticker])
-        
-        # Multi-Key Scan Logic to defeat API variant mismatches
-        pe_val, pb_val, mcap_val, div_val = 0.0, 0.0, 0.0, 0.0
-        if ret_snap == ft.RET_OK and not snap_df.empty:
-            snap = snap_df.iloc[0]
-            for k in ["pe_ratio", "pe_rate", "pe_ttm_ratio"]:
-                if k in snap_df.columns and not pd.isna(snap[k]) and snap[k] != 0:
-                    pe_val = float(snap[k])
-                    break
-            for k in ["pb_ratio", "pb_rate"]:
-                if k in snap_df.columns and not pd.isna(snap[k]) and snap[k] != 0:
-                    pb_val = float(snap[k])
-                    break
-            for k in ["total_market_val", "circular_market_val", "market_cap"]:
-                if k in snap_df.columns and not pd.isna(snap[k]) and snap[k] != 0:
-                    mcap_val = float(snap[k])
-                    break
-            for k in ["dividend_ratio_ttm", "dividend_ratio", "dividend_yield"]:
-                if k in snap_df.columns and not pd.isna(snap[k]) and snap[k] != 0:
-                    div_val = float(snap[k])
-                    break
-
-        # Operational Proxies fallback layer if account lacks subscription permissions
-        if pe_val == 0.0 or pe_val > 1000:
-            if "ORCL" in ticker: pe_val, pb_val, mcap_val, div_val = 26.40, 11.20, 591e9, 0.78
-            elif "AAPL" in ticker: pe_val, pb_val, mcap_val, div_val = 31.10, 48.30, 3.2e12, 0.48
-            elif "MSFT" in ticker: pe_val, pb_val, mcap_val, div_val = 35.20, 12.80, 3.1e12, 0.71
-            else: pe_val, pb_val, mcap_val, div_val = 22.50, 4.10, 150e9, 1.20
-
-        df_1yr = df[df['time_key'] >= (datetime.now() - timedelta(days=365))]
-        h_52 = df_1yr['high'].max() if not df_1yr.empty else df['close'].iloc[-1]
-        l_52 = df_1yr['low'].min() if not df_1yr.empty else df['close'].iloc[-1]
-
-        fundamental_data = {
-            "pe_ratio": pe_val,
-            "pb_ratio": pb_val,
-            "market_cap": mcap_val,
-            "dividend_yield": div_val,
-            "high_52w": h_52,
-            "low_52w": l_52,
-        }
-        
-        if 0 < pe_val < 18: financial_score = 85      
-        elif 18 <= pe_val <= 32: financial_score = 65  
-        else: financial_score = 45                 
-        
-        earnings_score = 75 if div_val > 0.5 else 55
+            # 2. Fetch Live Fundamentals safely via Cloud Info Dictionary
+            info = stock.info
             
-    finally:
-        quote_ctx.close()
+            # Safely grab metrics with logical fallback values
+            pe_val = info.get("trailingPE", info.get("forwardPE", 25.0))
+            pb_val = info.get("priceToBook", 4.0)
+            mcap_val = info.get("marketCap", 150e9)
+            div_val = info.get("dividendYield", 0.0) * 100 # yfinance uses decimals (0.01 = 1%)
+
+            # Double check fallback filters for bad or empty values
+            pe_val = 25.0 if pd.isna(pe_val) or pe_val is None else float(pe_val)
+            pb_val = 4.0 if pd.isna(pb_val) or pb_val is None else float(pb_val)
+            mcap_val = 150e9 if pd.isna(mcap_val) or mcap_val is None else float(mcap_val)
+            div_val = 0.0 if pd.isna(div_val) or div_val is None else float(div_val)
+
+            # Rolling 52-week calculation boundaries
+            df_1yr = df[df['time_key'] >= (datetime.now() - timedelta(days=365))]
+            h_52 = df_1yr['high'].max() if not df_1yr.empty else df['close'].iloc[-1]
+            l_52 = df_1yr['low'].min() if not df_1yr.empty else df['close'].iloc[-1]
+
+            fundamental_data = {
+                "pe_ratio": pe_val,
+                "pb_ratio": pb_val,
+                "market_cap": mcap_val,
+                "dividend_yield": div_val,
+                "high_52w": h_52,
+                "low_52w": l_52,
+            }
+            
+            # Fundamental Scoring Assignments
+            if 0 < pe_val < 18: financial_score = 85
+            elif 18 <= pe_val <= 32: financial_score = 65
+            else: financial_score = 45
+            
+            earnings_score = 75 if div_val > 0.5 else 55
+
+    except Exception as e:
+        print(f"Cloud fetching failure: {e}")
 
     pillars = {
         "Technicals": round(technical_score),
-        "Financials": round(financial_score),         
-        "Earnings": round(earnings_score),           
-        "Expert Sentiment": 58    
+        "Financials": round(financial_score),
+        "Earnings": round(earnings_score),
+        "Expert Sentiment": 58
     }
     
     final_score = sum(pillars.values()) / 4
     rating = "Bullish" if final_score >= 65 else "Bearish" if final_score <= 35 else "Neutral"
 
     return {
-        "ticker": ticker, 
-        "final_score": round(final_score), 
-        "rating": rating, 
+        "ticker": ticker,
+        "final_score": round(final_score),
+        "rating": rating,
         "pillars": pillars,
         "fundamentals": fundamental_data,
-        "history_df": df 
+        "history_df": df
     }
