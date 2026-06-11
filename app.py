@@ -124,9 +124,9 @@ if ticker_input:
         full_df = results.get("history_df", pd.DataFrame())
         funds = results.get("fundamentals", {})
 
-if full_df.empty:
-        st.error("⚠️ Data connection failed. Yahoo Finance returned an empty dataset. Please clear the Streamlit cache and try again.")
-    else:
+    if full_df.empty:
+            st.error("⚠️ Data connection failed. Yahoo Finance returned an empty dataset. Please clear the Streamlit cache and try again.")
+        else:
         # Timeframe Controls
         col_meta, col_time = st.columns([2, 1])
         with col_time:
